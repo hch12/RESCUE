@@ -246,6 +246,9 @@ def main():
     cfg_train['params']['config']['log_path'] = args.log_path
     cfg_train['params']['config']['train_dir'] = args.log_path # jp hack fix this asap
 
+    # Pass rl_device from command line args into player config (device_name)
+    cfg_train['params']['config']['device_name'] = args.rl_device
+
     os.makedirs(args.ckpt_path, exist_ok=True)
     os.makedirs(args.log_path, exist_ok=True)
 

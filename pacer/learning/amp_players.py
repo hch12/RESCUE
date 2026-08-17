@@ -20,13 +20,17 @@ class AMPPlayerContinuous(common_player.CommonPlayer):
         return
 
     def restore(self, fn):
-        super().restore(fn)
-        if self._normalize_amp_input:
-            checkpoint = torch_ext.load_checkpoint(fn)
-            self._amp_input_mean_std.load_state_dict(checkpoint['amp_input_mean_std'])
+        # Load checkpoint ONCE and reuse it (fixes duplicate loading bug)
+        checkpoint = torch_ext.load_checkpoint(fn)
+        
+        # Restore model state
+        self.model.load_state_dict(checkpoint['model'])
+        
+        if self._normalize_input:
+            self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
 
-            if self._normalize_input:
-                self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
+        if self._normalize_amp_input:
+            self._amp_input_mean_std.load_state_dict(checkpoint['amp_input_mean_std'])
 
         return
 

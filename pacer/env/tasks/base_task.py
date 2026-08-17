@@ -26,6 +26,7 @@ import numpy as np
 import torch
 
 import imageio
+import cv2
 from datetime import datetime
 from pacer.utils.flags import flags
 from collections import defaultdict
@@ -434,7 +435,6 @@ class BaseTask():
 
                     # writer.close()
                     # self._video_queue = deque(maxlen = self.max_video_queue_size)
-                    import cv2
                     images = [
                         img
                         for img in os.listdir(self.viewer_record_dir)

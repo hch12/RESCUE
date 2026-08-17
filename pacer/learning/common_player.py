@@ -1,5 +1,4 @@
 import torch
-import csv
 
 from rl_games.algos_torch import players
 from rl_games.algos_torch import torch_ext
@@ -8,7 +7,6 @@ from rl_games.common.player import BasePlayer
 
 import numpy as np
 import gc
-import time
 
 class CommonPlayer(players.PpoPlayerContinuous):
     def __init__(self, config):
@@ -22,10 +20,11 @@ class CommonPlayer(players.PpoPlayerContinuous):
 
         net_config = self._build_net_config()
         self._build_net(net_config)
+        # jp hack
+        # self.is_determenistic = False
         return
 
     def run(self):
-        import time
         n_games = self.games_num
         render = self.render_env
         n_game_life = self.n_game_life
@@ -47,11 +46,11 @@ class CommonPlayer(players.PpoPlayerContinuous):
 
         need_init_rnn = self.is_rnn
         for t in range(n_games):
-            
-            ####################################
             if games_played >= n_games:
                 break
-            obs_dict = self.env_reset()#
+
+            obs_dict = self.env_reset()
+            
             batch_size = 1
             batch_size = self.get_batch_size(obs_dict['obs'], batch_size)
 
@@ -66,28 +65,26 @@ class CommonPlayer(players.PpoPlayerContinuous):
 
             done_indices = []
 
+            step_count = 0
             with torch.no_grad():
-                for n in range(1):
-                    
-
+                for n in range(self.max_steps):
                     obs_dict = self.env_reset(done_indices)
-
                     if has_masks:
                         masks = self.env.get_action_mask()
                         action = self.get_masked_action(obs_dict, masks, is_determenistic)
                     else:
-
                         action = self.get_action(obs_dict, is_determenistic)
-
                     obs_dict, r, done, info =  self.env_step(self.env, action)
-                  
+
                     cr += r
                     steps += 1
+
                     self._post_step(info)
+
                     if render:
                         self.env.render(mode = 'human')
+                        time.sleep(self.render_sleep)
 
-                    
                     all_done_indices = done.nonzero(as_tuple=False)
                     done_indices = all_done_indices[::self.num_agents]
                     done_count = len(done_indices)
@@ -122,11 +119,12 @@ class CommonPlayer(players.PpoPlayerContinuous):
 
                         sum_game_res += game_res
                         if batch_size//self.num_agents == 1 or games_played >= n_games:
-                            break    
+                            break
+
                     done_indices = done_indices[:, 0]
-                    for done_idx in done_indices:
-                        self.env.task.gym.destroy_env(self.env.task.envs[done_idx.item()])
-                        done_indices = []
+                    step_count += 1
+
+        print(sum_rewards)
         if print_game_res:
             print('av reward:', sum_rewards / games_played * n_game_life, 'av steps:', sum_steps / games_played * n_game_life, 'winrate:', sum_game_res / games_played * n_game_life)
         else:
@@ -149,8 +147,9 @@ class CommonPlayer(players.PpoPlayerContinuous):
     def env_step(self, env, actions):
         if not self.is_tensor_obses:
             actions = actions.cpu().numpy()
-        
+
         obs, rewards, dones, infos = env.step(actions)
+
         if hasattr(obs, 'dtype') and obs.dtype == np.float64:
             obs = np.float32(obs)
         if self.value_size > 1:

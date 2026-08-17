@@ -151,11 +151,11 @@ class HumanoidTraj(humanoid_amp_task.HumanoidAMPTask):
             self.terrain.rmap[x,y]+=1
     def _reset_traj(self,env_ids):
         root_pos = self._humanoid_root_states[env_ids, 0:3]
-        root_pos_last = self._humanoid_root_states_last
+        root_pos_last = self._humanoid_root_states_last[env_ids, 0:3]
         ###refresh map
         # self.refresh_map(root_pos)
         self._traj_gen.reset(env_ids, root_pos,root_pos_last,self.humanoid_masses,self.dt)
-        self._humanoid_root_states_last = root_pos
+        self._humanoid_root_states_last[env_ids] = root_pos
     def _reset_task(self, env_ids):
         super()._reset_task(env_ids)
 

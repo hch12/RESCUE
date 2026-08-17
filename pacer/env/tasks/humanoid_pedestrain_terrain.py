@@ -30,6 +30,7 @@ from pacer.utils.draw_utils import agt_color
 from pacer.env.tasks.humanoid import compute_humanoid_observations_smpl_max, compute_humanoid_observations_smpl,\
     compute_humanoid_observations_max, compute_humanoid_observations,\
       ENABLE_MAX_COORD_OBS
+import env.tasks.humanoid as humanoid
 import trimesh
 import os
 from pathfinder import navmesh_baker as nmb
@@ -656,7 +657,8 @@ class HumanoidPedestrianTerrain(humanoid_traj.HumanoidTraj):#1
     def get_center_heights(self, root_states, env_ids=None):
         base_quat = root_states[:, 3:7]
         if self.cfg["env"]["terrain"]["terrainType"] == 'plane':
-            return torch.zeros(self.num_envs,
+            num_envs_h = self.num_envs if env_ids is None else len(env_ids)
+            return torch.zeros(num_envs_h,
                                self.num_center_height_points,
                                device=self.device,
                                requires_grad=False)
@@ -685,7 +687,8 @@ class HumanoidPedestrianTerrain(humanoid_traj.HumanoidTraj):#1
 
         base_quat = root_states[:, 3:7]
         if self.cfg["env"]["terrain"]["terrainType"] == 'plane':
-            return torch.zeros(self.num_envs,
+            num_envs_h = self.num_envs if env_ids is None else len(env_ids)
+            return torch.zeros(num_envs_h,
                                self.num_height_points,
                                device=self.device,
                                requires_grad=False)
@@ -732,7 +735,6 @@ class HumanoidPedestrianTerrain(humanoid_traj.HumanoidTraj):#1
                 root_points=None,
                 env_ids=env_ids,
             )
-        heights = self.terrain.sample_height_points(points.clone(), None)
         num_envs = self.num_envs if env_ids is None else len(env_ids)
 
         return heights.view(num_envs, -1)
@@ -811,6 +813,16 @@ class HumanoidPedestrianTerrain(humanoid_traj.HumanoidTraj):#1
         
         self.terminate_buf[:] = compute_humanoid_reset(self.terminate_buf,self._rigid_body_pos,
            self.terrain.target_position, self._enable_early_termination,self.terrain.left,self.terrain.right,self.terrain.up,self.terrain.bottom)
+        
+        # [BUGFIX] 更新 reset_buf：当 terminate 或 episode 到达最大长度时触发 done
+        # 原代码只更新了 terminate_buf，但 VecTask 返回的是 reset_buf 作为 dones
+        self.reset_buf[:], _ = humanoid.compute_humanoid_reset(
+            self.reset_buf, self.progress_buf, self._contact_forces,
+            self._contact_body_ids, self._rigid_body_pos,
+            self.max_episode_length, self._enable_early_termination,
+            self._termination_heights)
+        # 如果提前终止（跌倒/越界），也要标记 reset
+        self.reset_buf = torch.where(self.terminate_buf.bool(), torch.ones_like(self.reset_buf), self.reset_buf)
         
         return
 
@@ -1210,12 +1222,20 @@ class SocialForceModel:
             path = torch.stack([path[:, 0], -path[:, 2], path[:, 1],], axis=1)
             self.way_points.append(path)
         
-    def compute_desired_forces(self, positions, velocities, style_ids=None):
+    def compute_desired_forces(self, positions, velocities, style_ids=None, env_ids=None):
+        # 获取对应 env_ids 的 targets 和 reached_target
+        if env_ids is not None:
+            targets = self.targets[env_ids]
+            reached_target = self.reached_target[env_ids]
+        else:
+            targets = self.targets
+            reached_target = self.reached_target
+            
         # Calculate the direction and distance to the target
-        direction_to_target = self.targets - positions
+        direction_to_target = targets - positions
         distances_to_target = torch.norm(direction_to_target, dim=1)
-        distances_to_target = torch.where(self.reached_target, torch.tensor(float('inf'), device=distances_to_target.device), distances_to_target)
-        desired_directions = torch.where(self.reached_target.unsqueeze(1), torch.zeros_like(positions), direction_to_target / distances_to_target.unsqueeze(1))
+        distances_to_target = torch.where(reached_target, torch.tensor(float('inf'), device=distances_to_target.device), distances_to_target)
+        desired_directions = torch.where(reached_target.unsqueeze(1), torch.zeros_like(positions), direction_to_target / distances_to_target.unsqueeze(1))
         
         
         if style_ids is not None:
@@ -1297,12 +1317,20 @@ class SocialForceModel:
 
 
   
-    def compute_other_forces(self, positions):
+    def compute_other_forces(self, positions, env_ids=None):
         positions_diff = positions.unsqueeze(1) - positions.unsqueeze(0)  #  [n,n,2]
         distances = torch.norm(positions_diff, dim=-1)  # [n,n]
         repulsive_directions = positions_diff / (distances.unsqueeze(-1) + 1e-8)  # [n,n,2]
 
-        desired_directions = self.targets - positions  #  [n,2]
+        # 获取对应 env_ids 的 targets 和 reached_target
+        if env_ids is not None:
+            targets = self.targets[env_ids]
+            reached_target = self.reached_target[env_ids]
+        else:
+            targets = self.targets
+            reached_target = self.reached_target
+
+        desired_directions = targets - positions  #  [n,2]
         desired_directions = desired_directions / (torch.norm(desired_directions, dim=-1, keepdim=True) + 1e-8)
         directions_to_others = -positions_diff  # [n,n,2] 
         unit_directions_to_others = directions_to_others / (distances.unsqueeze(-1) + 1e-8)
@@ -1321,7 +1349,7 @@ class SocialForceModel:
         has_side_space = ~((side_space_mask & close_mask).any(dim=1))
         front_obstacles = (front_mask & close_mask).any(dim=1)
         stop_mask = front_obstacles & ~has_side_space
-        active_mask = ~stop_mask & ~self.reached_target
+        active_mask = ~stop_mask & ~reached_target
 
         repulsive_forces = torch.zeros_like(positions)
 
@@ -1351,11 +1379,18 @@ class SocialForceModel:
 
 
     
-    def update_targets(self, positions):
-        pointers = self.way_points_pointer
-        waypoints_len = torch.tensor([self.way_points[i].shape[0] for i in range(self.num_people)], device=positions.device)
+    def update_targets(self, positions, env_ids=None):
+        if env_ids is None:
+            # 默认处理所有人
+            people_ids = torch.arange(self.num_people, device=positions.device)
+        else:
+            people_ids = env_ids
+        
+        n = len(people_ids)
+        pointers = self.way_points_pointer[people_ids].clone()
+        waypoints_len = torch.tensor([self.way_points[i].shape[0] for i in people_ids.tolist()], device=positions.device)
 
-        current_waypoints = torch.stack([self.way_points[i][pointers[i], :2] for i in range(self.num_people)])
+        current_waypoints = torch.stack([self.way_points[i][pointers[j].item(), :2] for j, i in enumerate(people_ids.tolist())])
         distances_to_waypoints = torch.norm(positions - current_waypoints, dim=1)
 
         # Check if any personnel have arrived at the target point
@@ -1364,23 +1399,25 @@ class SocialForceModel:
         pointers = torch.clamp(pointers, max=waypoints_len - 1)  # Avoid exceeding the length of the path point
 
         # Update target point
-        new_targets = torch.stack([self.way_points[i][pointers[i], :2] for i in range(self.num_people)])
-        self.targets = new_targets
-        self.way_points_pointer = pointers
+        new_targets = torch.stack([self.way_points[i][pointers[j].item(), :2] for j, i in enumerate(people_ids.tolist())])
+        
+        # 更新对应 env_ids 的 way_points_pointer 和 targets
+        self.way_points_pointer[people_ids] = pointers.to(self.way_points_pointer.dtype)
+        self.targets[people_ids] = new_targets
 
 
-    def update_positions(self, positions, velocities,style_ids=None):
-        self.update_targets(positions)
+    def update_positions(self, positions, velocities,style_ids=None, env_ids=None):
+        self.update_targets(positions, env_ids)
 
-        desired_forces = self.compute_desired_forces(positions, velocities,style_ids)
-        other_forces = self.compute_other_forces(positions)
+        desired_forces = self.compute_desired_forces(positions, velocities,style_ids, env_ids=env_ids)
+        other_forces = self.compute_other_forces(positions, env_ids=env_ids)
         # environmental_forces = self.compute_environmental_forces(positions)
         forces = desired_forces + other_forces #+ environmental_forces
         velocities += forces * self.dt
         new_positions = positions + velocities * self.dt
         return new_positions, velocities
 
-    def social_force_simulate(self, pos_now, speed_now, mass_all, delta_t,style_ids=None):
+    def social_force_simulate(self, pos_now, speed_now, mass_all, delta_t,style_ids=None, env_ids=None):
         """
         Social force simulate function.
 
@@ -1400,7 +1437,7 @@ class SocialForceModel:
         velocities = speed_now
 
         # Update location and speed using social force models
-        new_positions, new_velocities = self.update_positions(positions[:,:2], velocities,style_ids)
+        new_positions, new_velocities = self.update_positions(positions[:,:2], velocities,style_ids, env_ids=env_ids)
 
 
         return new_positions, new_velocities
