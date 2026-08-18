@@ -821,6 +821,12 @@ class HumanoidPedestrianTerrain(humanoid_traj.HumanoidTraj):#1
             self._contact_body_ids, self._rigid_body_pos,
             self.max_episode_length, self._enable_early_termination,
             self._termination_heights)
+        # 越界终止也需要延迟保护：前2步内不判定越界，避免初始化时角色位置短暂出界导致秒终止
+        self.terminate_buf = torch.where(
+            self.progress_buf > 1,
+            self.terminate_buf,
+            torch.zeros_like(self.terminate_buf)
+        )
         # 如果提前终止（跌倒/越界），也要标记 reset
         self.reset_buf = torch.where(self.terminate_buf.bool(), torch.ones_like(self.reset_buf), self.reset_buf)
         

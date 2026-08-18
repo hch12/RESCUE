@@ -249,6 +249,10 @@ def main():
     # Pass rl_device from command line args into player config (device_name)
     cfg_train['params']['config']['device_name'] = args.rl_device
 
+    # Pass device_type and device_id to cfg so BaseTask uses the correct device
+    cfg['device_type'] = args.device
+    cfg['device_id'] = args.device_id
+
     os.makedirs(args.ckpt_path, exist_ok=True)
     os.makedirs(args.log_path, exist_ok=True)
 

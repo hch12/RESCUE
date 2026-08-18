@@ -103,5 +103,5 @@ params:
     amp_dropout: True
     
     player:
-      games_num: 50000000
+      games_num: 10000
       print_stats: True
