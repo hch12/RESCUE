@@ -44,12 +44,13 @@ class BaseTask():
     def __init__(self, cfg, enable_camera_sensors=False):
 
         self.headless = cfg["headless"]
-        if self.headless == False and not flags.no_virtual_display:
-            from pyvirtualdisplay.smartdisplay import SmartDisplay
-            self.virtual_display = SmartDisplay(size=(1920, 1000),
-            # self.virtual_display = SmartDisplay(size=(3840, 1000),
-                                                visible=True)
-            # visible=not flags.server_mode)
+        # Always start Xvfb (not Xephyr) so the GLFW window can be created on a
+        # fully headless server without a host DISPLAY.
+        # (write_viewer_image_to_file still needs a valid viewer/GL context.)
+        if self.headless == False:
+            from pyvirtualdisplay.display import Display
+            self.virtual_display = Display(size=(1920, 1000),
+                                           backend='xvfb')
             self.virtual_display.start()
 
 
@@ -185,7 +186,16 @@ class BaseTask():
             if idx > self.max_num_camera: break
 
         self.recorder_camera_handle = self.recorder_camera_handles[0]
-        self.recording, self.recording_state_change = False, False
+        # Auto-start recording so a headless run (no keyboard focus) produces
+        # a video. Pre-create viewer_record_dir so write_viewer_image_to_file
+        # has a valid target on the very first frame.
+        self.recording, self.recording_state_change = True, True
+        _curr_date_time = datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
+        self.viewer_record_dir = osp.join("output", "renderings", _curr_date_time)
+        os.makedirs(self.viewer_record_dir, exist_ok=True)
+        # Hard cap on captured frames so the run auto-finalizes the mp4
+        # without needing a keyboard 'L' press. 600 frames @ 30 fps => 20s.
+        self.max_record_frames = 600
         self.max_video_queue_size = 6000
         self._video_queue = deque(maxlen=self.max_video_queue_size)
         rendering_out = osp.join("output", "renderings")
@@ -415,6 +425,13 @@ class BaseTask():
                 elif evt.action == "random_heading" and evt.value > 0:
                     flags.random_heading = not flags.random_heading
                     print("random_heading: ", flags.random_heading)
+
+            # Auto-stop recording after max_record_frames so the mp4 is
+            # finalized without a keyboard 'L' press (headless servers).
+            if self.recording and self.stepcnt >= self.max_record_frames:
+                print(f"============ Auto-stop recording at {self.stepcnt} frames ============")
+                self.recording = False
+                self.recording_state_change = True
 
             if self.recording_state_change:
                 if not self.recording:

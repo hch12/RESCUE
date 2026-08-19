@@ -122,7 +122,6 @@ pyrender==0.1.45
 PySocks @ file:///tmp/build/80754af9/pysocks_1605305779399/work
 python-dateutil==2.9.0.post0
 python-utils==3.8.2
-pytorch-lightning==2.2.2
 pytz==2025.1
 PyVirtualDisplay==3.0
 PyWavelets==1.4.1
@@ -174,3 +173,4 @@ Werkzeug==3.0.2
 yarl==1.9.4
 youtube-dl==2021.12.17
 zipp==3.18.1
+pytorch-lightning==1.8.6
